@@ -2,9 +2,12 @@
 Agentic sampling loop that calls the Anthropic API and local implementation of anthropic-defined computer use tools.
 """
 
+import asyncio
+import os
 import platform
+import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, cast
 
@@ -70,6 +73,27 @@ SYSTEM_PROMPT = f"""<SYSTEM_CAPABILITY>
 </IMPORTANT>"""
 
 
+def _get_sleep_interval() -> int:
+    """Get sleep interval in seconds from environment variable or return default."""
+    try:
+        interval = int(os.getenv('ACTION_SLEEP_INTERVAL_SECONDS', '300'))
+        return max(60, interval)  # Ensure at least 60 seconds
+    except ValueError:
+        return 300  # Default to 5 minutes on parsing error
+
+def _is_within_work_hours(current_time: str) -> bool:
+    """Check if current time is within the configured work window."""
+    start_time = os.getenv('ACTION_START_TIME_UTC')
+    end_time = os.getenv('ACTION_END_TIME_UTC')
+    
+    if not start_time or not end_time:
+        return True  # If times not configured, always return True
+        
+    try:
+        return start_time <= current_time <= end_time
+    except ValueError:
+        return True  # On any parsing error, default to allowing execution
+
 async def sampling_loop(
     *,
     model: str,
@@ -87,7 +111,10 @@ async def sampling_loop(
 ):
     """
     Agentic sampling loop for the assistant/tool interaction of computer use.
+    Checks work hours based on ACTION_START_TIME_UTC and ACTION_END_TIME_UTC environment variables.
+    If outside work hours, sleeps for 5 minutes between checks.
     """
+    sleep_interval = _get_sleep_interval()
     tool_collection = ToolCollection(
         ComputerTool(),
         BashTool(),
@@ -99,6 +126,14 @@ async def sampling_loop(
     )
 
     while True:
+        current_time = datetime.now(timezone.utc).strftime('%H:%M UTC')
+        if not _is_within_work_hours(current_time):
+            message = f"Outside work hours at {current_time}. Sleeping for {sleep_interval} seconds."
+            tool_result = ToolResult(output=message)
+            tool_output_callback(tool_result, "time_check")
+            await asyncio.sleep(sleep_interval)
+            continue
+            
         enable_prompt_caching = False
         betas = [COMPUTER_USE_BETA_FLAG]
         image_truncation_threshold = only_n_most_recent_images or 0
