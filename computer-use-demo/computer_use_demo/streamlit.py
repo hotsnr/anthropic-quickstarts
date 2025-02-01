@@ -8,7 +8,7 @@ import os
 import subprocess
 import traceback
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from enum import StrEnum
 from functools import partial
 from pathlib import PosixPath
@@ -62,6 +62,17 @@ class Sender(StrEnum):
     TOOL = "tool"
 
 
+def _parse_utc_time(env_var: str | None) -> time | None:
+    """Parse HH:MM UTC format from environment variable into time object."""
+    if not env_var:
+        return None
+    try:
+        # Convert HH:MM UTC format to time object
+        hour, minute = map(int, env_var.replace(' UTC', '').split(':'))
+        return time(hour=hour, minute=minute)
+    except (ValueError, AttributeError):
+        return None
+
 def setup_state():
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -92,6 +103,10 @@ def setup_state():
         st.session_state.hide_images = False
     if "in_sampling_loop" not in st.session_state:
         st.session_state.in_sampling_loop = False
+    if "action_start_time" not in st.session_state:
+        st.session_state.action_start_time = _parse_utc_time(os.getenv('ACTION_START_TIME_UTC'))
+    if "action_end_time" not in st.session_state:
+        st.session_state.action_end_time = _parse_utc_time(os.getenv('ACTION_END_TIME_UTC'))
 
 
 def _reset_model():
@@ -153,6 +168,13 @@ async def main():
             ),
         )
         st.checkbox("Hide screenshots", key="hide_images")
+
+        st.markdown("### Work Hours (UTC)")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.time_input("Start Time", key="action_start_time", help="Start time in UTC. Leave empty to run at any time.")
+        with col2:
+            st.time_input("End Time", key="action_end_time", help="End time in UTC. Leave empty to run at any time.")
 
         if st.button("Reset", type="primary"):
             with st.spinner("Resetting..."):
@@ -240,6 +262,8 @@ async def main():
                 ),
                 api_key=st.session_state.api_key,
                 only_n_most_recent_images=st.session_state.only_n_most_recent_images,
+                start_time=st.session_state.action_start_time,
+                end_time=st.session_state.action_end_time,
             )
 
 

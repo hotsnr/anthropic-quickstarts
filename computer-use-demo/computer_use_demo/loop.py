@@ -5,9 +5,8 @@ Agentic sampling loop that calls the Anthropic API and local implementation of a
 import asyncio
 import os
 import platform
-import time
+import datetime
 from collections.abc import Callable
-from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any, cast
 
@@ -32,7 +31,15 @@ from anthropic.types.beta import (
     BetaToolUseBlockParam,
 )
 
-from .tools import BashTool, ComputerTool, EditTool, ToolCollection, ToolResult
+from .tools import (
+    BashTool,
+    ComputerTool,
+    EditTool,
+    GetUTCTimeTool,
+    SleepTool,
+    ToolCollection,
+    ToolResult,
+)
 
 COMPUTER_USE_BETA_FLAG = "computer-use-2024-10-22"
 PROMPT_CACHING_BETA_FLAG = "prompt-caching-2024-07-31"
@@ -64,7 +71,7 @@ SYSTEM_PROMPT = f"""<SYSTEM_CAPABILITY>
 * When using your bash tool with commands that are expected to output very large quantities of text, redirect into a tmp file and use str_replace_editor or `grep -n -B <lines before> -A <lines after> <query> <filename>` to confirm output.
 * When viewing a page it can be helpful to zoom out so that you can see everything on the page.  Either that, or make sure you scroll down to see everything before deciding something isn't available.
 * When using your computer function calls, they take a while to run and send back to you.  Where possible/feasible, try to chain multiple of these calls all into one function calls request.
-* The current date is {datetime.today().strftime('%A, %B %-d, %Y')}.
+* The current date is {datetime.datetime.today().strftime('%A, %B %-d, %Y')}.
 </SYSTEM_CAPABILITY>
 
 <IMPORTANT>
@@ -81,16 +88,22 @@ def _get_sleep_interval() -> int:
     except ValueError:
         return 300  # Default to 5 minutes on parsing error
 
-def _is_within_work_hours(current_time: str) -> bool:
+def _is_within_work_hours(
+    current_time: datetime.time,
+    start_time: datetime.time | None = None,
+    end_time: datetime.time | None = None
+) -> bool:
     """Check if current time is within the configured work window."""
-    start_time = os.getenv('ACTION_START_TIME_UTC')
-    end_time = os.getenv('ACTION_END_TIME_UTC')
-    
-    if not start_time or not end_time:
-        return True  # If times not configured, always return True
-        
+    # Convert current_time string to time object for comparison
     try:
-        return start_time <= current_time <= end_time
+        # If only one time is set, treat the other as allowing execution
+        if start_time and not end_time:
+            return current_time >= start_time
+        elif end_time and not start_time:
+            return current_time <= end_time
+        elif start_time and end_time:
+            return start_time <= current_time <= end_time
+        return True   # If no times configured, always return True
     except ValueError:
         return True  # On any parsing error, default to allowing execution
 
@@ -108,6 +121,8 @@ async def sampling_loop(
     api_key: str,
     only_n_most_recent_images: int | None = None,
     max_tokens: int = 4096,
+    start_time: datetime.time | None = None,
+    end_time: datetime.time | None = None,
 ):
     """
     Agentic sampling loop for the assistant/tool interaction of computer use.
@@ -119,6 +134,8 @@ async def sampling_loop(
         ComputerTool(),
         BashTool(),
         EditTool(),
+        GetUTCTimeTool(),
+        SleepTool(),
     )
     system = BetaTextBlockParam(
         type="text",
@@ -126,14 +143,13 @@ async def sampling_loop(
     )
 
     while True:
-        current_time = datetime.now(timezone.utc).strftime('%H:%M UTC')
-        if not _is_within_work_hours(current_time):
-            message = f"Outside work hours at {current_time}. Sleeping for {sleep_interval} seconds."
-            tool_result = ToolResult(output=message)
-            tool_output_callback(tool_result, "time_check")
+        current_time = datetime.datetime.now(datetime.timezone.utc).time()
+        if not _is_within_work_hours(current_time, start_time, end_time):
+            message = f"Outside work hours at {current_time.strftime('%H:%M UTC')}. Sleeping for {sleep_interval} seconds."
+            tool_output_callback(ToolResult(output=message), "time_check")
             await asyncio.sleep(sleep_interval)
             continue
-            
+
         enable_prompt_caching = False
         betas = [COMPUTER_USE_BETA_FLAG]
         image_truncation_threshold = only_n_most_recent_images or 0
